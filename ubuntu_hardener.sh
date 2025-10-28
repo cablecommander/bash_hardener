@@ -7,6 +7,7 @@
 # - Changing SSH port to 555
 # - Disabling root SSH login
 # - Enabling UFW firewall
+# - Configuring Fail2Ban for SSH protection
 # - Allowing custom ports
 ###############################################################################
 
@@ -250,7 +251,175 @@ print_success "Port 555 (SSH) allowed through firewall"
 echo ""
 
 ###############################################################################
-# 4. Ask for Additional Ports
+# 4. Configure Fail2Ban for SSH Protection
+###############################################################################
+
+print_info "==================================================================="
+print_info "Configuring Fail2Ban for SSH Protection"
+print_info "==================================================================="
+echo ""
+
+# Install Fail2Ban
+print_info "Installing Fail2Ban..."
+apt-get install -y fail2ban
+check_error "Failed to install Fail2Ban"
+print_success "Fail2Ban installed successfully"
+
+echo ""
+
+# Detect current IP address
+print_info "Detecting your current IP address..."
+CURRENT_IP=$(echo $SSH_CONNECTION | awk '{print $1}')
+
+# If SSH_CONNECTION is not available, try other methods
+if [ -z "$CURRENT_IP" ]; then
+    CURRENT_IP=$(who am i --ips 2>/dev/null | awk '{print $NF}' | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}')
+fi
+
+# If still no IP, try to get from last login
+if [ -z "$CURRENT_IP" ]; then
+    CURRENT_IP=$(last -i | grep "still logged in" | head -n 1 | awk '{print $3}' | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}')
+fi
+
+# Whitelist configuration
+WHITELIST_IPS=()
+
+if [ -n "$CURRENT_IP" ]; then
+    print_info "Your current IP address appears to be: $CURRENT_IP"
+    echo ""
+    print_warning "STRONGLY RECOMMENDED: Whitelist your current IP to prevent lockout!"
+    read -p "Do you want to whitelist $CURRENT_IP? (y/n): " whitelist_current
+
+    if [[ "$whitelist_current" =~ ^[Yy]$ ]]; then
+        WHITELIST_IPS+=("$CURRENT_IP")
+        print_success "Added $CURRENT_IP to whitelist"
+    else
+        print_warning "Current IP NOT whitelisted - be careful with your login attempts!"
+    fi
+else
+    print_warning "Could not detect your current IP address"
+fi
+
+echo ""
+print_info "Would you like to add additional IPs to the whitelist?"
+print_info "(Whitelisted IPs will NEVER be banned by Fail2Ban)"
+read -p "Add more IPs to whitelist? (y/n): " add_more_ips
+
+if [[ "$add_more_ips" =~ ^[Yy]$ ]]; then
+    while true; do
+        echo ""
+        read -p "Enter IP address to whitelist (or 'done' to finish): " whitelist_ip
+
+        if [[ "$whitelist_ip" == "done" ]]; then
+            break
+        fi
+
+        # Validate IP address format
+        if [[ $whitelist_ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            WHITELIST_IPS+=("$whitelist_ip")
+            print_success "Added $whitelist_ip to whitelist"
+        else
+            print_error "Invalid IP address format. Please try again."
+        fi
+    done
+fi
+
+# Show final warning if no whitelist
+if [ ${#WHITELIST_IPS[@]} -eq 0 ]; then
+    echo ""
+    print_warning "==================================================================="
+    print_warning "DANGER: NO IP WHITELIST CONFIGURED!"
+    print_warning "==================================================================="
+    print_warning "If you enter your password incorrectly 5 times, you will be"
+    print_warning "PERMANENTLY LOCKED OUT and will need console access to recover!"
+    print_warning "It is HIGHLY recommended to whitelist at least one IP address."
+    echo ""
+    read -p "Are you SURE you want to continue without a whitelist? (yes/no): " confirm_no_whitelist
+
+    if [[ ! "$confirm_no_whitelist" == "yes" ]]; then
+        print_info "Returning to whitelist configuration..."
+        read -p "Enter at least one IP address to whitelist: " whitelist_ip
+        if [[ $whitelist_ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+            WHITELIST_IPS+=("$whitelist_ip")
+            print_success "Added $whitelist_ip to whitelist"
+        else
+            print_error "Invalid IP address. Exiting for safety."
+            exit 1
+        fi
+    fi
+fi
+
+echo ""
+print_info "Configuring Fail2Ban for SSH on port 555..."
+
+# Create custom jail configuration
+cat > /etc/fail2ban/jail.d/sshd-custom.conf << EOF
+[sshd]
+enabled = true
+port = 555
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 5
+bantime = -1
+findtime = 600
+action = iptables-multiport[name=SSH, port="555", protocol=tcp]
+EOF
+
+check_error "Failed to create Fail2Ban jail configuration"
+
+# Add whitelist IPs to jail configuration if any
+if [ ${#WHITELIST_IPS[@]} -gt 0 ]; then
+    print_info "Adding ${#WHITELIST_IPS[@]} IP(s) to Fail2Ban whitelist..."
+    IGNORE_IP_LINE="ignoreip = 127.0.0.1/8 ::1"
+
+    for ip in "${WHITELIST_IPS[@]}"; do
+        IGNORE_IP_LINE="$IGNORE_IP_LINE $ip"
+    done
+
+    # Add ignoreip line to jail config
+    sed -i "/^\[sshd\]/a $IGNORE_IP_LINE" /etc/fail2ban/jail.d/sshd-custom.conf
+    check_error "Failed to add whitelist IPs to Fail2Ban"
+
+    print_success "Whitelisted IPs:"
+    for ip in "${WHITELIST_IPS[@]}"; do
+        print_success "  - $ip"
+    done
+fi
+
+# Restart Fail2Ban to apply configuration
+print_info "Restarting Fail2Ban service..."
+systemctl restart fail2ban
+check_error "Failed to restart Fail2Ban"
+
+# Verify Fail2Ban is running
+if systemctl is-active --quiet fail2ban; then
+    print_success "Fail2Ban is running and monitoring SSH on port 555"
+else
+    print_error "Fail2Ban service is not running!"
+    exit 1
+fi
+
+# Verify jail is active
+sleep 2
+if fail2ban-client status sshd &> /dev/null; then
+    print_success "SSH jail is active and monitoring"
+    echo ""
+    print_info "Fail2Ban Configuration:"
+    print_info "  - Monitoring: SSH port 555"
+    print_info "  - Max retries: 5 failed attempts"
+    print_info "  - Ban duration: PERMANENT"
+    print_info "  - Time window: 10 minutes"
+    if [ ${#WHITELIST_IPS[@]} -gt 0 ]; then
+        print_info "  - Whitelisted IPs: ${#WHITELIST_IPS[@]}"
+    fi
+else
+    print_warning "Could not verify SSH jail status, but service is running"
+fi
+
+echo ""
+
+###############################################################################
+# 5. Ask for Additional Ports
 ###############################################################################
 
 print_info "Would you like to open any additional ports?"
@@ -311,7 +480,7 @@ print_success "UFW firewall enabled"
 echo ""
 
 ###############################################################################
-# 5. Display Configuration Summary
+# 6. Display Configuration Summary
 ###############################################################################
 
 print_info "==================================================================="
@@ -322,13 +491,14 @@ print_success "Automatic updates: Configured"
 print_success "SSH port changed: 22 -> 555"
 print_success "Root SSH login: Disabled"
 print_success "UFW firewall: Enabled"
+print_success "Fail2Ban: Active (5 attempts = permanent ban)"
 echo ""
 print_info "Active firewall rules:"
 ufw status numbered
 echo ""
 
 ###############################################################################
-# 6. Restart SSH Service
+# 7. Restart SSH Service
 ###############################################################################
 
 print_warning "==================================================================="
