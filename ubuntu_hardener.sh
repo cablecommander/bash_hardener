@@ -347,11 +347,11 @@ echo ""
 echo ""
 
 print_info "Restarting SSH service..."
-systemctl restart sshd
+systemctl restart ssh
 check_error "Failed to restart SSH service"
 
 # Verify SSH is running
-if systemctl is-active --quiet sshd; then
+if systemctl is-active --quiet ssh; then
     print_success "SSH service restarted successfully"
 else
     print_error "SSH service is not running!"
