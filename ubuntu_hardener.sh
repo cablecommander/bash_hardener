@@ -8,6 +8,7 @@
 # - Disabling root SSH login
 # - Enabling UFW firewall
 # - Configuring Fail2Ban for SSH protection
+# - Joining Windows Active Directory domain (optional)
 # - Allowing custom ports
 ###############################################################################
 
@@ -480,7 +481,395 @@ print_success "UFW firewall enabled"
 echo ""
 
 ###############################################################################
-# 6. Display Configuration Summary
+# 6. Join Windows Domain (Active Directory)
+###############################################################################
+
+print_info "==================================================================="
+print_info "Windows Domain Join Configuration"
+print_info "==================================================================="
+echo ""
+
+read -p "Do you want to join this server to a Windows domain? (y/n): " join_domain
+
+if [[ "$join_domain" =~ ^[Yy]$ ]]; then
+
+    ###########################################################################
+    # 6.1. Install Required Packages
+    ###########################################################################
+
+    print_info "Installing required packages for Active Directory integration..."
+    apt-get update -qq
+    check_error "Failed to update package lists"
+
+    apt-get install -y realmd sssd sssd-tools adcli krb5-user packagekit samba-common-bin oddjob oddjob-mkhomedir
+    check_error "Failed to install AD integration packages"
+    print_success "Required packages installed successfully"
+
+    echo ""
+
+    ###########################################################################
+    # 6.2. Get Domain Information
+    ###########################################################################
+
+    print_info "Enter your Windows domain information:"
+    echo ""
+    read -p "Domain name (e.g., test.example.local): " DOMAIN_NAME
+
+    # Validate domain name format
+    if [[ ! "$DOMAIN_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+        print_error "Invalid domain name format"
+        exit 1
+    fi
+
+    echo ""
+    print_info "Enter Windows domain admin credentials:"
+    print_info "Note: Username can contain special characters like \$ (e.g., admin\$)"
+    echo ""
+
+    read -p "Domain admin username: " DOMAIN_ADMIN
+
+    # Validate username is not empty
+    if [ -z "$DOMAIN_ADMIN" ]; then
+        print_error "Username cannot be empty"
+        exit 1
+    fi
+
+    # Securely read password
+    read -s -p "Domain admin password: " DOMAIN_PASSWORD
+    echo ""
+
+    if [ -z "$DOMAIN_PASSWORD" ]; then
+        print_error "Password cannot be empty"
+        exit 1
+    fi
+
+    echo ""
+
+    ###########################################################################
+    # 6.3. Discover Domain
+    ###########################################################################
+
+    print_info "Discovering domain $DOMAIN_NAME..."
+    realm discover "$DOMAIN_NAME" > /tmp/realm_discover.log 2>&1
+
+    if [ $? -eq 0 ]; then
+        print_success "Domain $DOMAIN_NAME discovered successfully"
+        echo ""
+        print_info "Domain information:"
+        realm discover "$DOMAIN_NAME" | grep -E "domain-name|configured|server-software"
+        echo ""
+    else
+        print_error "Failed to discover domain $DOMAIN_NAME"
+        print_error "Please check:"
+        print_error "  - DNS is configured correctly"
+        print_error "  - Domain name is correct"
+        print_error "  - Network connectivity to domain controllers"
+        cat /tmp/realm_discover.log
+        exit 1
+    fi
+
+    ###########################################################################
+    # 6.4. Configure Kerberos
+    ###########################################################################
+
+    print_info "Configuring Kerberos..."
+
+    # Convert domain to uppercase for Kerberos realm
+    KERBEROS_REALM=$(echo "$DOMAIN_NAME" | tr '[:lower:]' '[:upper:]')
+
+    # Backup existing krb5.conf
+    if [ -f /etc/krb5.conf ]; then
+        cp /etc/krb5.conf /etc/krb5.conf.backup.$(date +%Y%m%d_%H%M%S)
+        print_info "Backed up existing krb5.conf"
+    fi
+
+    # Create Kerberos configuration
+    cat > /etc/krb5.conf << EOF
+[libdefaults]
+    default_realm = $KERBEROS_REALM
+    dns_lookup_realm = true
+    dns_lookup_kdc = true
+    ticket_lifetime = 24h
+    renew_lifetime = 7d
+    forwardable = true
+    rdns = false
+    default_ccache_name = KEYRING:persistent:%{uid}
+
+[realms]
+    $KERBEROS_REALM = {
+        kdc = $DOMAIN_NAME
+        admin_server = $DOMAIN_NAME
+    }
+
+[domain_realm]
+    .$DOMAIN_NAME = $KERBEROS_REALM
+    $DOMAIN_NAME = $KERBEROS_REALM
+EOF
+
+    check_error "Failed to configure Kerberos"
+    print_success "Kerberos configured successfully"
+
+    echo ""
+
+    ###########################################################################
+    # 6.5. Test Kerberos Authentication
+    ###########################################################################
+
+    print_info "Testing Kerberos authentication..."
+
+    # Test Kerberos ticket acquisition
+    echo "$DOMAIN_PASSWORD" | kinit "$DOMAIN_ADMIN@$KERBEROS_REALM" > /tmp/kinit.log 2>&1
+
+    if [ $? -eq 0 ]; then
+        print_success "Kerberos authentication successful"
+
+        # Show ticket information
+        print_info "Kerberos ticket information:"
+        klist | grep -E "Default principal|Valid starting|Expires|renew until"
+        echo ""
+
+        # Destroy the ticket for security
+        kdestroy
+    else
+        print_error "Kerberos authentication failed"
+        print_error "Please check:"
+        print_error "  - Domain admin username is correct"
+        print_error "  - Domain admin password is correct"
+        print_error "  - Time synchronization with domain controller"
+        cat /tmp/kinit.log
+        exit 1
+    fi
+
+    ###########################################################################
+    # 6.6. Join Domain
+    ###########################################################################
+
+    print_info "Joining domain $DOMAIN_NAME..."
+
+    # Join domain using realm with password from stdin
+    echo "$DOMAIN_PASSWORD" | realm join --user="$DOMAIN_ADMIN" "$DOMAIN_NAME" > /tmp/realm_join.log 2>&1
+
+    if [ $? -eq 0 ]; then
+        print_success "Successfully joined domain $DOMAIN_NAME"
+    else
+        print_error "Failed to join domain"
+        cat /tmp/realm_join.log
+        exit 1
+    fi
+
+    echo ""
+
+    ###########################################################################
+    # 6.7. Configure SSSD
+    ###########################################################################
+
+    print_info "Configuring SSSD for domain authentication..."
+
+    # Backup existing sssd.conf
+    if [ -f /etc/sssd/sssd.conf ]; then
+        cp /etc/sssd/sssd.conf /etc/sssd/sssd.conf.backup.$(date +%Y%m%d_%H%M%S)
+        print_info "Backed up existing sssd.conf"
+    fi
+
+    # Configure SSSD
+    cat > /etc/sssd/sssd.conf << EOF
+[sssd]
+domains = $DOMAIN_NAME
+config_file_version = 2
+services = nss, pam
+
+[domain/$DOMAIN_NAME]
+ad_domain = $DOMAIN_NAME
+krb5_realm = $KERBEROS_REALM
+realmd_tags = manages-system joined-with-adcli
+cache_credentials = True
+id_provider = ad
+krb5_store_password_if_offline = True
+default_shell = /bin/bash
+ldap_id_mapping = True
+use_fully_qualified_names = False
+fallback_homedir = /home/%u
+access_provider = ad
+ad_gpo_access_control = permissive
+EOF
+
+    check_error "Failed to configure SSSD"
+
+    # Set proper permissions on sssd.conf
+    chmod 600 /etc/sssd/sssd.conf
+    check_error "Failed to set permissions on sssd.conf"
+
+    print_success "SSSD configured successfully"
+
+    echo ""
+
+    ###########################################################################
+    # 6.8. Configure Automatic Home Directory Creation
+    ###########################################################################
+
+    print_info "Configuring automatic home directory creation..."
+
+    # Enable pam_mkhomedir
+    pam-auth-update --enable mkhomedir > /dev/null 2>&1
+
+    # Ensure mkhomedir is configured in PAM
+    if ! grep -q "pam_mkhomedir.so" /etc/pam.d/common-session; then
+        echo "session required pam_mkhomedir.so skel=/etc/skel/ umask=0077" >> /etc/pam.d/common-session
+        check_error "Failed to configure pam_mkhomedir"
+    fi
+
+    print_success "Automatic home directory creation enabled"
+    print_info "Domain user home directories will be created at /home/username"
+
+    echo ""
+
+    ###########################################################################
+    # 6.9. Configure Firewall for Active Directory
+    ###########################################################################
+
+    print_info "Configuring firewall for Active Directory communication..."
+
+    # Allow DNS
+    ufw allow 53/tcp comment 'DNS (TCP)'
+    ufw allow 53/udp comment 'DNS (UDP)'
+
+    # Allow Kerberos
+    ufw allow 88/tcp comment 'Kerberos (TCP)'
+    ufw allow 88/udp comment 'Kerberos (UDP)'
+
+    # Allow LDAP
+    ufw allow 389/tcp comment 'LDAP (TCP)'
+    ufw allow 389/udp comment 'LDAP (UDP)'
+
+    # Allow LDAPS
+    ufw allow 636/tcp comment 'LDAPS (TCP)'
+
+    # Allow Kerberos Password Change
+    ufw allow 464/tcp comment 'Kerberos Password Change (TCP)'
+    ufw allow 464/udp comment 'Kerberos Password Change (UDP)'
+
+    # Allow Global Catalog
+    ufw allow 3268/tcp comment 'Global Catalog (TCP)'
+    ufw allow 3269/tcp comment 'Global Catalog SSL (TCP)'
+
+    check_error "Failed to configure firewall rules for AD"
+    print_success "Firewall configured for Active Directory communication"
+
+    echo ""
+
+    ###########################################################################
+    # 6.10. Restart SSSD Service
+    ###########################################################################
+
+    print_info "Restarting SSSD service..."
+    systemctl restart sssd
+    check_error "Failed to restart SSSD"
+
+    # Verify SSSD is running
+    if systemctl is-active --quiet sssd; then
+        print_success "SSSD service is running"
+    else
+        print_error "SSSD service is not running"
+        systemctl status sssd
+        exit 1
+    fi
+
+    # Enable SSSD to start on boot
+    systemctl enable sssd > /dev/null 2>&1
+    print_success "SSSD enabled to start on boot"
+
+    echo ""
+
+    ###########################################################################
+    # 6.11. Verify Domain Join
+    ###########################################################################
+
+    print_info "Verifying domain join status..."
+
+    realm list | grep -q "$DOMAIN_NAME"
+    if [ $? -eq 0 ]; then
+        print_success "Server is joined to domain: $DOMAIN_NAME"
+        echo ""
+        print_info "Domain configuration:"
+        realm list
+        echo ""
+    else
+        print_error "Domain join verification failed"
+        exit 1
+    fi
+
+    ###########################################################################
+    # 6.12. Test Domain User Authentication
+    ###########################################################################
+
+    print_info "==================================================================="
+    print_info "Testing Domain Authentication"
+    print_info "==================================================================="
+    echo ""
+
+    print_info "Testing if domain users can be queried..."
+
+    # Try to get info about the admin user
+    id "$DOMAIN_ADMIN" > /tmp/id_test.log 2>&1
+
+    if [ $? -eq 0 ]; then
+        print_success "Successfully queried domain user information"
+        print_info "Domain admin user details:"
+        id "$DOMAIN_ADMIN"
+        echo ""
+    else
+        print_warning "Could not query domain user yet (this may be normal)"
+        print_info "SSSD cache may need time to populate"
+        cat /tmp/id_test.log
+    fi
+
+    echo ""
+    print_info "Testing domain user authentication via PAM..."
+
+    # Check if getent can retrieve domain users
+    getent passwd "$DOMAIN_ADMIN" > /tmp/getent_test.log 2>&1
+
+    if [ $? -eq 0 ]; then
+        print_success "Domain user lookup successful via NSS"
+        print_info "User information from directory:"
+        getent passwd "$DOMAIN_ADMIN"
+        echo ""
+    else
+        print_warning "Domain user lookup not yet available"
+        print_info "This may take a few moments to propagate"
+        cat /tmp/getent_test.log
+    fi
+
+    echo ""
+    print_success "==================================================================="
+    print_success "Domain Join Configuration Complete!"
+    print_success "==================================================================="
+    echo ""
+    print_info "Domain Join Summary:"
+    print_success "  - Domain: $DOMAIN_NAME"
+    print_success "  - Kerberos realm: $KERBEROS_REALM"
+    print_success "  - SSSD: Active and configured"
+    print_success "  - Home directories: /home/username (auto-created)"
+    print_success "  - Firewall: AD ports opened"
+    echo ""
+    print_info "Domain users can now login with:"
+    print_info "  - Username: domain_username (without domain prefix)"
+    print_info "  - Example: ssh -p 555 john.doe@server"
+    echo ""
+    print_warning "IMPORTANT: Test domain user login before disconnecting!"
+    echo ""
+
+    # Clean up sensitive log files
+    rm -f /tmp/realm_discover.log /tmp/kinit.log /tmp/realm_join.log /tmp/id_test.log /tmp/getent_test.log 2>/dev/null
+
+else
+    print_info "Skipping Windows domain join configuration"
+fi
+
+echo ""
+
+###############################################################################
+# 7. Display Configuration Summary
 ###############################################################################
 
 print_info "==================================================================="
@@ -492,13 +881,16 @@ print_success "SSH port changed: 22 -> 555"
 print_success "Root SSH login: Disabled"
 print_success "UFW firewall: Enabled"
 print_success "Fail2Ban: Active (5 attempts = permanent ban)"
+if [[ "$join_domain" =~ ^[Yy]$ ]]; then
+    print_success "Domain join: Completed ($DOMAIN_NAME)"
+fi
 echo ""
 print_info "Active firewall rules:"
 ufw status numbered
 echo ""
 
 ###############################################################################
-# 7. Restart SSH Service
+# 8. Restart SSH Service
 ###############################################################################
 
 print_warning "==================================================================="
