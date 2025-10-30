@@ -687,12 +687,18 @@ fi
 echo ""
 
 ###############################################################################
-# 5. Ask for Additional Ports
+# 5. Configure Additional Firewall Ports
 ###############################################################################
 
-print_info "Would you like to open any additional ports?"
+print_info "==================================================================="
+print_info "Additional Firewall Ports Configuration"
+print_info "==================================================================="
+echo ""
+print_info "You can open additional ports for services running on this server."
+print_info "Examples: Web servers (80, 443), databases (3306, 5432), etc."
+echo ""
 
-if validate_yes_no "Open additional ports?"; then
+if validate_yes_no "Would you like to open any additional ports?"; then
     while true; do
         echo ""
         port_num=$(get_validated_port "Enter port number (or press Enter to finish): " "allow_done")
