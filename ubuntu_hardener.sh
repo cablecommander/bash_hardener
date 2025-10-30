@@ -662,30 +662,49 @@ EOF
 
     print_info "Joining domain $DOMAIN_NAME..."
 
-    # Since Kerberos authentication already succeeded, we have a valid ticket
-    # Re-acquire Kerberos ticket for the domain join operation
+    # Get the hostname for the computer account
+    HOSTNAME=$(hostname -s | tr '[:lower:]' '[:upper:]')
+    print_info "Computer name will be: $HOSTNAME"
+
+    # Check if computer already exists in domain and remove if needed
+    print_info "Checking if computer account already exists..."
     echo "$DOMAIN_PASSWORD" | kinit "$DOMAIN_ADMIN@$KERBEROS_REALM" > /dev/null 2>&1
 
-    # Join domain using realm with the existing Kerberos ticket
-    # This method is more reliable than passing password through stdin
-    realm join --user="$DOMAIN_ADMIN" "$DOMAIN_NAME" > /tmp/realm_join.log 2>&1
-    JOIN_RESULT=$?
+    # Try to delete existing computer account if it exists
+    adcli delete-computer "$HOSTNAME" --domain="$DOMAIN_NAME" --login-user="$DOMAIN_ADMIN" > /dev/null 2>&1
 
-    # Destroy the ticket after join attempt
+    # Clean up ticket
     kdestroy > /dev/null 2>&1
+
+    # Now join the domain using adcli with stdin password
+    # Using adcli directly gives us better control than realm join
+    print_info "Joining domain using adcli..."
+
+    echo "$DOMAIN_PASSWORD" | adcli join "$DOMAIN_NAME" \
+        --login-user="$DOMAIN_ADMIN" \
+        --stdin-password \
+        --domain-ou="CN=Computers" \
+        --show-details > /tmp/realm_join.log 2>&1
+    JOIN_RESULT=$?
 
     if [ $JOIN_RESULT -eq 0 ]; then
         print_success "Successfully joined domain $DOMAIN_NAME"
+
+        # Now configure realm to recognize the domain
+        print_info "Configuring realm settings..."
+        realm list > /dev/null 2>&1
+
     else
-        print_error "Failed to join domain"
+        print_error "Failed to join domain using adcli"
         print_error "Check the error details below:"
         cat /tmp/realm_join.log
         echo ""
         print_error "Common issues:"
         print_error "  - Insufficient permissions (user must be Domain Admin)"
-        print_error "  - Computer object already exists in AD"
+        print_error "  - Computer object already exists in AD (tried to delete)"
         print_error "  - DNS reverse lookup issues"
         print_error "  - Time synchronization problems"
+        print_error "  - Special characters in username may need escaping"
         exit 1
     fi
 
