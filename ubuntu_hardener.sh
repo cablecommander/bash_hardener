@@ -680,10 +680,11 @@ EOF
     # Using adcli directly gives us better control than realm join
     print_info "Joining domain using adcli..."
 
+    # Don't specify domain-ou, let adcli use the default Computers container
+    # The --computer-ou flag requires the full DN which is domain-specific
     echo "$DOMAIN_PASSWORD" | adcli join "$DOMAIN_NAME" \
         --login-user="$DOMAIN_ADMIN" \
         --stdin-password \
-        --domain-ou="CN=Computers" \
         --show-details > /tmp/realm_join.log 2>&1
     JOIN_RESULT=$?
 
