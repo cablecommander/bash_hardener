@@ -4,12 +4,13 @@
 # Ubuntu Server Hardening Script
 # This script hardens an Ubuntu server by:
 # - Configuring automatic updates
-# - Changing SSH port to 555
+# - Changing SSH port (default 555, customizable)
 # - Disabling root SSH login
 # - Enabling UFW firewall
 # - Configuring Fail2Ban for SSH protection
 # - Joining Windows Active Directory domain (optional)
 # - Allowing custom ports
+# - Enhanced input validation with 3-attempt limit
 ###############################################################################
 
 # Color codes for output
@@ -43,6 +44,189 @@ check_error() {
     fi
 }
 
+# Function to validate yes/no input (Y/n format - Yes is default)
+# Returns 0 for yes, 1 for no
+validate_yes_no() {
+    local prompt="$1"
+    local attempts=0
+    local max_attempts=3
+
+    while [ $attempts -lt $max_attempts ]; do
+        read -p "$prompt (Y/n): " response
+
+        # Empty input or yes variants = yes (default)
+        if [[ -z "$response" ]] || [[ "$response" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+            return 0
+        # No variants = no
+        elif [[ "$response" =~ ^[Nn]([Oo])?$ ]]; then
+            return 1
+        else
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "Invalid input. Please enter 'y' for yes or 'n' for no."
+                print_info "Attempt $attempts of $max_attempts"
+            fi
+        fi
+    done
+
+    print_error "Maximum attempts reached. Exiting for safety."
+    exit 1
+}
+
+# Function to validate yes/no with explicit "yes" required for critical confirmations
+# Returns 0 for yes, 1 for no
+validate_yes_explicit() {
+    local prompt="$1"
+    local attempts=0
+    local max_attempts=3
+
+    while [ $attempts -lt $max_attempts ]; do
+        read -p "$prompt (type 'yes' to confirm): " response
+
+        if [[ "$response" == "yes" ]]; then
+            return 0
+        elif [[ "$response" =~ ^[Nn]([Oo])?$ ]] || [[ -z "$response" ]]; then
+            return 1
+        else
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "Invalid input. Please type 'yes' to confirm or 'no' to decline."
+                print_info "Attempt $attempts of $max_attempts"
+            fi
+        fi
+    done
+
+    print_error "Maximum attempts reached. Exiting for safety."
+    exit 1
+}
+
+# Function to validate IP address format and range (0-255 per octet)
+validate_ip() {
+    local ip="$1"
+
+    # Check basic format
+    if [[ ! $ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        return 1
+    fi
+
+    # Check each octet is 0-255
+    IFS='.' read -ra OCTETS <<< "$ip"
+    for octet in "${OCTETS[@]}"; do
+        if [ "$octet" -lt 0 ] || [ "$octet" -gt 255 ]; then
+            return 1
+        fi
+    done
+
+    return 0
+}
+
+# Function to get validated IP address input
+get_validated_ip() {
+    local prompt="$1"
+    local allow_done="$2"  # Set to "allow_done" to allow typing 'done'
+    local attempts=0
+    local max_attempts=3
+    local ip_input
+
+    while [ $attempts -lt $max_attempts ]; do
+        read -p "$prompt" ip_input
+
+        # Check if 'done' is allowed and entered
+        if [[ "$allow_done" == "allow_done" ]] && [[ "$ip_input" == "done" ]]; then
+            echo "done"
+            return 0
+        fi
+
+        # Validate IP
+        if validate_ip "$ip_input"; then
+            echo "$ip_input"
+            return 0
+        else
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "Invalid IP address format. Each octet must be 0-255 (e.g., 192.168.1.100)"
+                print_info "Attempt $attempts of $max_attempts"
+            fi
+        fi
+    done
+
+    print_error "Maximum attempts reached for IP input. Exiting."
+    exit 1
+}
+
+# Function to validate port number
+validate_port() {
+    local port="$1"
+
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        return 1
+    fi
+
+    return 0
+}
+
+# Function to get validated port number
+get_validated_port() {
+    local prompt="$1"
+    local allow_done="$2"  # Set to "allow_done" to allow typing 'done'
+    local attempts=0
+    local max_attempts=3
+    local port_input
+
+    while [ $attempts -lt $max_attempts ]; do
+        read -p "$prompt" port_input
+
+        # Check if 'done' is allowed and entered
+        if [[ "$allow_done" == "allow_done" ]] && [[ "$port_input" == "done" ]]; then
+            echo "done"
+            return 0
+        fi
+
+        # Validate port
+        if validate_port "$port_input"; then
+            echo "$port_input"
+            return 0
+        else
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "Invalid port number. Must be between 1 and 65535"
+                print_info "Attempt $attempts of $max_attempts"
+            fi
+        fi
+    done
+
+    print_error "Maximum attempts reached for port input. Exiting."
+    exit 1
+}
+
+# Function to get validated menu choice
+get_validated_choice() {
+    local prompt="$1"
+    local min="$2"
+    local max="$3"
+    local attempts=0
+    local max_attempts=3
+    local choice
+
+    while [ $attempts -lt $max_attempts ]; do
+        read -p "$prompt" choice
+
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge "$min" ] && [ "$choice" -le "$max" ]; then
+            echo "$choice"
+            return 0
+        else
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "Invalid choice. Please enter a number between $min and $max"
+                print_info "Attempt $attempts of $max_attempts"
+            fi
+        fi
+    done
+
+    print_error "Maximum attempts reached. Exiting."
+    exit 1
+}
+
 # Check if running as root
 if [ "$EUID" -ne 0 ]; then
     print_error "This script must be run as root (use sudo)"
@@ -66,7 +250,7 @@ echo "2) All updates auto-install"
 echo "3) Auto-download but manual install"
 echo "4) Disable auto-updates"
 echo ""
-read -p "Enter your choice (1-4): " update_choice
+update_choice=$(get_validated_choice "Enter your choice (1-4): " 1 4)
 
 case $update_choice in
     1)
@@ -157,10 +341,6 @@ EOF
         check_error "Failed to disable auto-updates"
         print_success "Auto-updates disabled"
         ;;
-    *)
-        print_error "Invalid choice. Exiting."
-        exit 1
-        ;;
 esac
 
 echo ""
@@ -189,19 +369,36 @@ echo ""
 print_info "SSH Port Configuration"
 echo ""
 print_info "Default SSH port is 22. For security, you should use a different port."
-read -p "Enter SSH port number (press Enter for default 555): " SSH_PORT
 
-# If empty, use default 555
-if [ -z "$SSH_PORT" ]; then
-    SSH_PORT=555
-    print_info "Using default port: 555"
-fi
+# Get SSH port with validation (allow empty for default)
+attempts=0
+max_attempts=3
+SSH_PORT=""
 
-# Validate port number
-if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1 ] || [ "$SSH_PORT" -gt 65535 ]; then
-    print_error "Invalid port number. Must be between 1 and 65535"
-    exit 1
-fi
+while [ $attempts -lt $max_attempts ]; do
+    read -p "Enter SSH port number (press Enter for default 555): " SSH_PORT
+
+    # If empty, use default 555
+    if [ -z "$SSH_PORT" ]; then
+        SSH_PORT=555
+        print_info "Using default port: 555"
+        break
+    fi
+
+    # Validate port number
+    if validate_port "$SSH_PORT"; then
+        break
+    else
+        attempts=$((attempts + 1))
+        if [ $attempts -lt $max_attempts ]; then
+            print_error "Invalid port number. Must be between 1 and 65535"
+            print_info "Attempt $attempts of $max_attempts"
+        else
+            print_error "Maximum attempts reached. Exiting."
+            exit 1
+        fi
+    fi
+done
 
 # Check for commonly used ports and warn
 COMMON_PORTS=(80 443 21 25 110 143 3306 5432 6379 27017 8080 8443 3389)
@@ -233,17 +430,10 @@ for port_info in "${PORT_NAMES[@]}"; do
         print_warning "Using this port for SSH may cause conflicts with $port_service service"
         print_warning "or may be blocked by some firewalls/networks."
         echo ""
-        read -p "Are you SURE you want to use port $SSH_PORT for SSH? (type 'yes' to confirm): " confirm_port
 
-        if [[ ! "$confirm_port" == "yes" ]]; then
+        if ! validate_yes_explicit "Are you SURE you want to use port $SSH_PORT for SSH?"; then
             print_info "Please choose a different port."
-            read -p "Enter SSH port number: " SSH_PORT
-
-            # Re-validate the new port
-            if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1 ] || [ "$SSH_PORT" -gt 65535 ]; then
-                print_error "Invalid port number. Must be between 1 and 65535"
-                exit 1
-            fi
+            SSH_PORT=$(get_validated_port "Enter SSH port number: " "")
         fi
         break
     fi
@@ -354,9 +544,8 @@ if [ -n "$CURRENT_IP" ]; then
     print_info "Your current IP address appears to be: $CURRENT_IP"
     echo ""
     print_warning "STRONGLY RECOMMENDED: Whitelist your current IP to prevent lockout!"
-    read -p "Do you want to whitelist $CURRENT_IP? (y/n): " whitelist_current
 
-    if [[ "$whitelist_current" =~ ^[Yy]$ ]]; then
+    if validate_yes_no "Do you want to whitelist $CURRENT_IP?"; then
         WHITELIST_IPS+=("$CURRENT_IP")
         print_success "Added $CURRENT_IP to whitelist"
     else
@@ -369,24 +558,18 @@ fi
 echo ""
 print_info "Would you like to add additional IPs to the whitelist?"
 print_info "(Whitelisted IPs will NEVER be banned by Fail2Ban)"
-read -p "Add more IPs to whitelist? (y/n): " add_more_ips
 
-if [[ "$add_more_ips" =~ ^[Yy]$ ]]; then
+if validate_yes_no "Add more IPs to whitelist?"; then
     while true; do
         echo ""
-        read -p "Enter IP address to whitelist (or 'done' to finish): " whitelist_ip
+        whitelist_ip=$(get_validated_ip "Enter IP address to whitelist (or 'done' to finish): " "allow_done")
 
         if [[ "$whitelist_ip" == "done" ]]; then
             break
         fi
 
-        # Validate IP address format
-        if [[ $whitelist_ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            WHITELIST_IPS+=("$whitelist_ip")
-            print_success "Added $whitelist_ip to whitelist"
-        else
-            print_error "Invalid IP address format. Please try again."
-        fi
+        WHITELIST_IPS+=("$whitelist_ip")
+        print_success "Added $whitelist_ip to whitelist"
     done
 fi
 
@@ -400,18 +583,12 @@ if [ ${#WHITELIST_IPS[@]} -eq 0 ]; then
     print_warning "PERMANENTLY LOCKED OUT and will need console access to recover!"
     print_warning "It is HIGHLY recommended to whitelist at least one IP address."
     echo ""
-    read -p "Are you SURE you want to continue without a whitelist? (yes/no): " confirm_no_whitelist
 
-    if [[ ! "$confirm_no_whitelist" == "yes" ]]; then
+    if ! validate_yes_explicit "Are you SURE you want to continue without a whitelist?"; then
         print_info "Returning to whitelist configuration..."
-        read -p "Enter at least one IP address to whitelist: " whitelist_ip
-        if [[ $whitelist_ip =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
-            WHITELIST_IPS+=("$whitelist_ip")
-            print_success "Added $whitelist_ip to whitelist"
-        else
-            print_error "Invalid IP address. Exiting for safety."
-            exit 1
-        fi
+        whitelist_ip=$(get_validated_ip "Enter at least one IP address to whitelist: " "")
+        WHITELIST_IPS+=("$whitelist_ip")
+        print_success "Added $whitelist_ip to whitelist"
     fi
 fi
 
@@ -489,25 +666,44 @@ echo ""
 ###############################################################################
 
 print_info "Would you like to open any additional ports?"
-read -p "Open additional ports? (y/n): " open_ports
 
-if [[ "$open_ports" =~ ^[Yy]$ ]]; then
+if validate_yes_no "Open additional ports?"; then
     while true; do
         echo ""
-        read -p "Enter port number (or 'done' to finish): " port_num
+        port_num=$(get_validated_port "Enter port number (or 'done' to finish): " "allow_done")
 
         if [[ "$port_num" == "done" ]]; then
             break
         fi
 
-        # Validate port number
-        if ! [[ "$port_num" =~ ^[0-9]+$ ]] || [ "$port_num" -lt 1 ] || [ "$port_num" -gt 65535 ]; then
-            print_error "Invalid port number. Please enter a number between 1 and 65535"
+        # Get protocol with validation
+        protocol=""
+        attempts=0
+        max_attempts=3
+
+        while [ $attempts -lt $max_attempts ]; do
+            read -p "Protocol (tcp/udp/both): " protocol
+            protocol=$(echo "$protocol" | tr '[:upper:]' '[:lower:]')
+
+            if [[ "$protocol" == "tcp" ]] || [[ "$protocol" == "udp" ]] || [[ "$protocol" == "both" ]]; then
+                break
+            else
+                attempts=$((attempts + 1))
+                if [ $attempts -lt $max_attempts ]; then
+                    print_error "Invalid protocol. Please enter 'tcp', 'udp', or 'both'"
+                    print_info "Attempt $attempts of $max_attempts"
+                else
+                    print_error "Maximum attempts reached. Skipping this port."
+                    protocol=""
+                    break
+                fi
+            fi
+        done
+
+        # Skip if protocol validation failed
+        if [ -z "$protocol" ]; then
             continue
         fi
-
-        read -p "Protocol (tcp/udp/both): " protocol
-        protocol=$(echo "$protocol" | tr '[:upper:]' '[:lower:]')
 
         read -p "Description/Service name: " service_desc
 
@@ -528,10 +724,6 @@ if [[ "$open_ports" =~ ^[Yy]$ ]]; then
                 ufw allow $port_num/udp comment "$service_desc"
                 check_error "Failed to allow port $port_num/udp"
                 print_success "Port $port_num/tcp and udp allowed for $service_desc"
-                ;;
-            *)
-                print_error "Invalid protocol. Skipping this port."
-                continue
                 ;;
         esac
     done
@@ -554,9 +746,7 @@ print_info "Windows Domain Join Configuration"
 print_info "==================================================================="
 echo ""
 
-read -p "Do you want to join this server to a Windows domain? (y/n): " join_domain
-
-if [[ "$join_domain" =~ ^[Yy]$ ]]; then
+if validate_yes_no "Do you want to join this server to a Windows domain?"; then
 
     ###########################################################################
     # 6.1. Install Required Packages
@@ -594,35 +784,90 @@ if [[ "$join_domain" =~ ^[Yy]$ ]]; then
 
     print_info "Enter your Windows domain information:"
     echo ""
-    read -p "Domain name (e.g., test.example.local): " DOMAIN_NAME
 
-    # Validate domain name format
-    if [[ ! "$DOMAIN_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
-        print_error "Invalid domain name format"
-        exit 1
-    fi
+    # Get and validate domain name
+    attempts=0
+    max_attempts=3
+    DOMAIN_NAME=""
+
+    while [ $attempts -lt $max_attempts ]; do
+        read -p "Domain name (e.g., test.example.local): " DOMAIN_NAME
+
+        # Check if empty
+        if [ -z "$DOMAIN_NAME" ]; then
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "Domain name cannot be empty"
+                print_info "Attempt $attempts of $max_attempts"
+            else
+                print_error "Maximum attempts reached. Exiting."
+                exit 1
+            fi
+            continue
+        fi
+
+        # Validate domain name format
+        if [[ "$DOMAIN_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+            break
+        else
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "Invalid domain name format (e.g., example.local or test.example.com)"
+                print_info "Attempt $attempts of $max_attempts"
+            else
+                print_error "Maximum attempts reached. Exiting."
+                exit 1
+            fi
+        fi
+    done
 
     echo ""
     print_info "Enter Windows domain admin credentials:"
     print_info "Note: Username can contain special characters like \$ (e.g., admin\$)"
     echo ""
 
-    read -p "Domain admin username: " DOMAIN_ADMIN
+    # Get and validate username (required field)
+    attempts=0
+    DOMAIN_ADMIN=""
 
-    # Validate username is not empty
-    if [ -z "$DOMAIN_ADMIN" ]; then
-        print_error "Username cannot be empty"
-        exit 1
-    fi
+    while [ $attempts -lt $max_attempts ]; do
+        read -p "Domain admin username: " DOMAIN_ADMIN
 
-    # Securely read password
-    read -s -p "Domain admin password: " DOMAIN_PASSWORD
-    echo ""
+        if [ -n "$DOMAIN_ADMIN" ]; then
+            break
+        else
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "Username cannot be empty"
+                print_info "Attempt $attempts of $max_attempts"
+            else
+                print_error "Maximum attempts reached. Exiting."
+                exit 1
+            fi
+        fi
+    done
 
-    if [ -z "$DOMAIN_PASSWORD" ]; then
-        print_error "Password cannot be empty"
-        exit 1
-    fi
+    # Get and validate password (required field)
+    attempts=0
+    DOMAIN_PASSWORD=""
+
+    while [ $attempts -lt $max_attempts ]; do
+        read -s -p "Domain admin password: " DOMAIN_PASSWORD
+        echo ""
+
+        if [ -n "$DOMAIN_PASSWORD" ]; then
+            break
+        else
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "Password cannot be empty"
+                print_info "Attempt $attempts of $max_attempts"
+            else
+                print_error "Maximum attempts reached. Exiting."
+                exit 1
+            fi
+        fi
+    done
 
     echo ""
 
@@ -1082,7 +1327,7 @@ print_success "SSH port changed: 22 -> $SSH_PORT"
 print_success "Root SSH login: Disabled"
 print_success "UFW firewall: Enabled"
 print_success "Fail2Ban: Active (5 attempts = permanent ban)"
-if [[ "$join_domain" =~ ^[Yy]$ ]]; then
+if [ -n "$DOMAIN_NAME" ]; then
     print_success "Domain join: Completed ($DOMAIN_NAME)"
 fi
 echo ""
