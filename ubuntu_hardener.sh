@@ -621,7 +621,16 @@ fi
 echo ""
 print_info "Configuring Fail2Ban for SSH on port $SSH_PORT..."
 
-# Create custom jail configuration
+# Build the ignoreip line with whitelisted IPs
+IGNORE_IP_LINE="ignoreip = 127.0.0.1/8 ::1"
+if [ ${#WHITELIST_IPS[@]} -gt 0 ]; then
+    print_info "Adding ${#WHITELIST_IPS[@]} IP(s) to Fail2Ban whitelist..."
+    for ip in "${WHITELIST_IPS[@]}"; do
+        IGNORE_IP_LINE="$IGNORE_IP_LINE $ip"
+    done
+fi
+
+# Create custom jail configuration with whitelist included
 cat > /etc/fail2ban/jail.d/sshd-custom.conf << EOF
 [sshd]
 enabled = true
@@ -631,24 +640,14 @@ logpath = /var/log/auth.log
 maxretry = 5
 bantime = -1
 findtime = 600
+$IGNORE_IP_LINE
 action = iptables-multiport[name=SSH, port="$SSH_PORT", protocol=tcp]
 EOF
 
 check_error "Failed to create Fail2Ban jail configuration"
 
-# Add whitelist IPs to jail configuration if any
+# Show whitelisted IPs
 if [ ${#WHITELIST_IPS[@]} -gt 0 ]; then
-    print_info "Adding ${#WHITELIST_IPS[@]} IP(s) to Fail2Ban whitelist..."
-    IGNORE_IP_LINE="ignoreip = 127.0.0.1/8 ::1"
-
-    for ip in "${WHITELIST_IPS[@]}"; do
-        IGNORE_IP_LINE="$IGNORE_IP_LINE $ip"
-    done
-
-    # Add ignoreip line to jail config
-    sed -i "/^\[sshd\]/a $IGNORE_IP_LINE" /etc/fail2ban/jail.d/sshd-custom.conf
-    check_error "Failed to add whitelist IPs to Fail2Ban"
-
     print_success "Whitelisted IPs:"
     for ip in "${WHITELIST_IPS[@]}"; do
         print_success "  - $ip"
