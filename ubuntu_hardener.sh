@@ -679,41 +679,56 @@ EOF
     # Clean up ticket
     kdestroy > /dev/null 2>&1
 
-    # Now join the domain using adcli with stdin password
-    # Using adcli directly gives us better control than realm join
-    print_info "Joining domain using adcli..."
+    # Install additional packages that may help with authentication
+    print_info "Installing additional authentication packages..."
+    apt-get install -y libsasl2-modules-gssapi-mit samba-common-tools > /dev/null 2>&1
 
-    # Install additional packages that may help with encryption
-    apt-get install -y libsasl2-modules-gssapi-mit > /dev/null 2>&1
+    # Now join the domain using realm join with a password file
+    print_info "Joining domain using realm..."
 
-    # Don't specify domain-ou, let adcli use the default Computers container
-    # The --computer-ou flag requires the full DN which is domain-specific
-    # Add samba-data flag to ensure proper attribute setting
-    echo "$DOMAIN_PASSWORD" | adcli join "$DOMAIN_NAME" \
-        --login-user="$DOMAIN_ADMIN" \
-        --stdin-password \
-        --add-samba-data \
-        --show-details > /tmp/realm_join.log 2>&1
+    # Create a temporary password file (more reliable than stdin for special characters)
+    PASS_FILE=$(mktemp)
+    chmod 600 "$PASS_FILE"
+    echo -n "$DOMAIN_PASSWORD" > "$PASS_FILE"
+
+    # Try realm join with password file
+    realm join --membership-software=samba --client-software=sssd \
+        --user="$DOMAIN_ADMIN" "$DOMAIN_NAME" < "$PASS_FILE" > /tmp/realm_join.log 2>&1
     JOIN_RESULT=$?
+
+    # Clean up password file immediately
+    rm -f "$PASS_FILE"
 
     if [ $JOIN_RESULT -eq 0 ]; then
         print_success "Successfully joined domain $DOMAIN_NAME"
+        echo ""
 
-        # Now configure realm to recognize the domain
-        print_info "Configuring realm settings..."
-        realm list > /dev/null 2>&1
+        # Verify the join worked
+        print_info "Verifying domain join..."
+        sleep 2
+
+        if realm list | grep -q "$DOMAIN_NAME"; then
+            print_success "Domain join verified with realm"
+            realm list
+        else
+            print_warning "Realm list doesn't show domain, but join may have succeeded"
+        fi
 
     else
-        print_error "Failed to join domain using adcli"
+        print_error "Failed to join domain"
         print_error "Check the error details below:"
         cat /tmp/realm_join.log
         echo ""
         print_error "Common issues:"
         print_error "  - Insufficient permissions (user must be Domain Admin)"
-        print_error "  - Computer object already exists in AD (tried to delete)"
+        print_error "  - Computer object already exists in AD"
         print_error "  - DNS reverse lookup issues"
         print_error "  - Time synchronization problems"
-        print_error "  - Special characters in username may need escaping"
+        print_error ""
+        print_error "Troubleshooting commands to run manually:"
+        print_error "  realm discover $DOMAIN_NAME"
+        print_error "  getent passwd $DOMAIN_ADMIN"
+        print_error "  sudo realm join --verbose $DOMAIN_NAME"
         exit 1
     fi
 
@@ -844,18 +859,79 @@ EOF
     # 6.11. Verify Domain Join
     ###########################################################################
 
-    print_info "Verifying domain join status..."
+    print_info "==================================================================="
+    print_info "Comprehensive Domain Join Verification"
+    print_info "==================================================================="
+    echo ""
 
-    realm list | grep -q "$DOMAIN_NAME"
-    if [ $? -eq 0 ]; then
-        print_success "Server is joined to domain: $DOMAIN_NAME"
+    VERIFICATION_FAILED=0
+
+    # Test 1: Realm list
+    print_info "Test 1: Checking realm list..."
+    if realm list | grep -q "$DOMAIN_NAME"; then
+        print_success "✓ Realm shows domain: $DOMAIN_NAME"
+        realm list | grep -E "domain-name|configured|login-policy"
+    else
+        print_error "✗ Domain not found in realm list"
+        VERIFICATION_FAILED=1
+    fi
+    echo ""
+
+    # Test 2: Check if computer account exists
+    print_info "Test 2: Checking computer account..."
+    if adcli show-computer > /dev/null 2>&1; then
+        print_success "✓ Computer account exists in AD"
+        adcli show-computer 2>/dev/null | head -5
+    else
+        print_warning "✗ Could not verify computer account"
+        VERIFICATION_FAILED=1
+    fi
+    echo ""
+
+    # Test 3: Check SSSD domain status
+    print_info "Test 3: Checking SSSD domain status..."
+    if sssctl domain-status "$DOMAIN_NAME" > /dev/null 2>&1; then
+        print_success "✓ SSSD can communicate with domain"
+        sssctl domain-status "$DOMAIN_NAME" | head -10
+    else
+        print_warning "✗ SSSD domain status check failed"
+        VERIFICATION_FAILED=1
+    fi
+    echo ""
+
+    # Test 4: Check NSS configuration
+    print_info "Test 4: Checking NSS configuration..."
+    if grep -q "sss" /etc/nsswitch.conf; then
+        print_success "✓ NSS is configured for SSSD"
+    else
+        print_error "✗ NSS not configured for SSSD"
+        VERIFICATION_FAILED=1
+    fi
+    echo ""
+
+    # Test 5: Check PAM configuration
+    print_info "Test 5: Checking PAM configuration..."
+    if grep -q "pam_sss.so" /etc/pam.d/common-auth; then
+        print_success "✓ PAM is configured for SSSD authentication"
+    else
+        print_error "✗ PAM not configured for SSSD"
+        VERIFICATION_FAILED=1
+    fi
+    echo ""
+
+    if [ $VERIFICATION_FAILED -eq 1 ]; then
+        print_warning "Some verification tests failed"
+        print_warning "The domain join may be incomplete or not working correctly"
         echo ""
-        print_info "Domain configuration:"
-        realm list
+        print_info "To troubleshoot, run these commands:"
+        print_info "  sudo realm list"
+        print_info "  sudo systemctl status sssd"
+        print_info "  sudo journalctl -xe -u sssd"
+        print_info "  sudo sssctl domain-status $DOMAIN_NAME"
         echo ""
     else
-        print_error "Domain join verification failed"
-        exit 1
+        print_success "All domain join verification tests passed!"
+        echo ""
     fi
 
     ###########################################################################
