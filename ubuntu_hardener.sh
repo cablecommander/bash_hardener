@@ -123,7 +123,7 @@ validate_ip() {
 # Function to get validated IP address input
 get_validated_ip() {
     local prompt="$1"
-    local allow_done="$2"  # Set to "allow_done" to allow typing 'done'
+    local allow_done="$2"  # Set to "allow_done" to allow typing 'done' or pressing Enter
     local attempts=0
     local max_attempts=3
     local ip_input
@@ -131,10 +131,23 @@ get_validated_ip() {
     while [ $attempts -lt $max_attempts ]; do
         read -p "$prompt" ip_input
 
-        # Check if 'done' is allowed and entered
-        if [[ "$allow_done" == "allow_done" ]] && [[ "$ip_input" == "done" ]]; then
-            echo "done"
-            return 0
+        # Check if 'done' is allowed and entered FIRST (before validation)
+        # Empty input (pressing Enter) or typing "done" both exit when allow_done is set
+        if [[ "$allow_done" == "allow_done" ]]; then
+            if [[ -z "$ip_input" ]] || [[ "$ip_input" == "done" ]]; then
+                echo "done"
+                return 0
+            fi
+        fi
+
+        # Check for empty input when allow_done is NOT set
+        if [ -z "$ip_input" ]; then
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "IP address cannot be empty."
+                print_info "Attempt $attempts of $max_attempts"
+            fi
+            continue
         fi
 
         # Validate IP
@@ -168,7 +181,7 @@ validate_port() {
 # Function to get validated port number
 get_validated_port() {
     local prompt="$1"
-    local allow_done="$2"  # Set to "allow_done" to allow typing 'done'
+    local allow_done="$2"  # Set to "allow_done" to allow typing 'done' or pressing Enter
     local attempts=0
     local max_attempts=3
     local port_input
@@ -176,10 +189,23 @@ get_validated_port() {
     while [ $attempts -lt $max_attempts ]; do
         read -p "$prompt" port_input
 
-        # Check if 'done' is allowed and entered
-        if [[ "$allow_done" == "allow_done" ]] && [[ "$port_input" == "done" ]]; then
-            echo "done"
-            return 0
+        # Check if 'done' is allowed and entered FIRST (before validation)
+        # Empty input (pressing Enter) or typing "done" both exit when allow_done is set
+        if [[ "$allow_done" == "allow_done" ]]; then
+            if [[ -z "$port_input" ]] || [[ "$port_input" == "done" ]]; then
+                echo "done"
+                return 0
+            fi
+        fi
+
+        # Check for empty input when allow_done is NOT set
+        if [ -z "$port_input" ]; then
+            attempts=$((attempts + 1))
+            if [ $attempts -lt $max_attempts ]; then
+                print_error "Port number cannot be empty."
+                print_info "Attempt $attempts of $max_attempts"
+            fi
+            continue
         fi
 
         # Validate port
@@ -562,7 +588,7 @@ print_info "(Whitelisted IPs will NEVER be banned by Fail2Ban)"
 if validate_yes_no "Add more IPs to whitelist?"; then
     while true; do
         echo ""
-        whitelist_ip=$(get_validated_ip "Enter IP address to whitelist (or 'done' to finish): " "allow_done")
+        whitelist_ip=$(get_validated_ip "Enter IP address to whitelist (or press Enter to finish): " "allow_done")
 
         if [[ "$whitelist_ip" == "done" ]]; then
             break
@@ -670,7 +696,7 @@ print_info "Would you like to open any additional ports?"
 if validate_yes_no "Open additional ports?"; then
     while true; do
         echo ""
-        port_num=$(get_validated_port "Enter port number (or 'done' to finish): " "allow_done")
+        port_num=$(get_validated_port "Enter port number (or press Enter to finish): " "allow_done")
 
         if [[ "$port_num" == "done" ]]; then
             break
