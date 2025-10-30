@@ -803,9 +803,13 @@ if validate_yes_no "Do you want to join this server to a Windows domain?"; then
 
     echo ""
 
-    ###########################################################################
-    # 6.2. Get Domain Information
-    ###########################################################################
+    # Domain join retry loop
+    DOMAIN_JOIN_SUCCESS=0
+    while [ $DOMAIN_JOIN_SUCCESS -eq 0 ]; do
+
+        ###########################################################################
+        # 6.2. Get Domain Information
+        ###########################################################################
 
     print_info "Enter your Windows domain information:"
     echo ""
@@ -831,13 +835,26 @@ if validate_yes_no "Do you want to join this server to a Windows domain?"; then
             continue
         fi
 
-        # Validate domain name format
-        if [[ "$DOMAIN_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
-            break
+        # Validate domain name format - must have at least one dot and valid format
+        # Pattern requires: word.word or word.word.word etc.
+        if [[ "$DOMAIN_NAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]{0,61}[a-zA-Z0-9])?)*$ ]]; then
+            # Additional check: must not start or end with hyphen, must have at least 2 parts
+            if [[ ! "$DOMAIN_NAME" =~ ^- ]] && [[ ! "$DOMAIN_NAME" =~ -$ ]] && [[ "$DOMAIN_NAME" == *.* ]]; then
+                break
+            else
+                attempts=$((attempts + 1))
+                if [ $attempts -lt $max_attempts ]; then
+                    print_error "Invalid domain name format. Must be FQDN (e.g., example.local or test.example.com)"
+                    print_info "Attempt $attempts of $max_attempts"
+                else
+                    print_error "Maximum attempts reached. Exiting."
+                    exit 1
+                fi
+            fi
         else
             attempts=$((attempts + 1))
             if [ $attempts -lt $max_attempts ]; then
-                print_error "Invalid domain name format (e.g., example.local or test.example.com)"
+                print_error "Invalid domain name format. Must be FQDN (e.g., example.local or test.example.com)"
                 print_info "Attempt $attempts of $max_attempts"
             else
                 print_error "Maximum attempts reached. Exiting."
@@ -915,8 +932,18 @@ if validate_yes_no "Do you want to join this server to a Windows domain?"; then
         print_error "  - DNS is configured correctly"
         print_error "  - Domain name is correct"
         print_error "  - Network connectivity to domain controllers"
+        echo ""
         cat /tmp/realm_discover.log
-        exit 1
+        echo ""
+
+        if validate_yes_no "Would you like to try again with different domain information?"; then
+            print_info "Restarting domain join process..."
+            echo ""
+            continue
+        else
+            print_info "Skipping domain join."
+            break
+        fi
     fi
 
     ###########################################################################
@@ -990,8 +1017,18 @@ EOF
         print_error "  - Domain admin username is correct"
         print_error "  - Domain admin password is correct"
         print_error "  - Time synchronization with domain controller"
+        echo ""
         cat /tmp/kinit.log
-        exit 1
+        echo ""
+
+        if validate_yes_no "Would you like to try again with different credentials?"; then
+            print_info "Restarting domain join process..."
+            echo ""
+            continue
+        else
+            print_info "Skipping domain join."
+            break
+        fi
     fi
 
     ###########################################################################
@@ -1059,12 +1096,21 @@ EOF
         print_error "  - Computer object already exists in AD"
         print_error "  - DNS reverse lookup issues"
         print_error "  - Time synchronization problems"
-        print_error ""
+        echo ""
         print_error "Troubleshooting commands to run manually:"
         print_error "  realm discover $DOMAIN_NAME"
         print_error "  getent passwd $DOMAIN_ADMIN"
         print_error "  sudo realm join --verbose $DOMAIN_NAME"
-        exit 1
+        echo ""
+
+        if validate_yes_no "Would you like to try again with different information?"; then
+            print_info "Restarting domain join process..."
+            echo ""
+            continue
+        else
+            print_info "Skipping domain join."
+            break
+        fi
     fi
 
     echo ""
@@ -1332,6 +1378,11 @@ EOF
 
     # Clean up sensitive log files
     rm -f /tmp/realm_discover.log /tmp/kinit.log /tmp/realm_join.log /tmp/id_test.log /tmp/getent_test.log 2>/dev/null
+
+    # Set success flag to exit the retry loop
+    DOMAIN_JOIN_SUCCESS=1
+
+    done  # End of domain join retry loop
 
 else
     print_info "Skipping Windows domain join configuration"
