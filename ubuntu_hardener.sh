@@ -184,14 +184,79 @@ if [ ! -f /etc/ssh/sshd_config ]; then
     exit 1
 fi
 
-# Change SSH port to 555
-print_info "Changing SSH port to 555..."
-sed -i 's/^#\?Port .*/Port 555/' /etc/ssh/sshd_config
+# Prompt for SSH port
+echo ""
+print_info "SSH Port Configuration"
+echo ""
+print_info "Default SSH port is 22. For security, you should use a different port."
+read -p "Enter SSH port number (press Enter for default 555): " SSH_PORT
+
+# If empty, use default 555
+if [ -z "$SSH_PORT" ]; then
+    SSH_PORT=555
+    print_info "Using default port: 555"
+fi
+
+# Validate port number
+if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1 ] || [ "$SSH_PORT" -gt 65535 ]; then
+    print_error "Invalid port number. Must be between 1 and 65535"
+    exit 1
+fi
+
+# Check for commonly used ports and warn
+COMMON_PORTS=(80 443 21 25 110 143 3306 5432 6379 27017 8080 8443 3389)
+PORT_NAMES=(
+    "80:HTTP"
+    "443:HTTPS"
+    "21:FTP"
+    "25:SMTP"
+    "110:POP3"
+    "143:IMAP"
+    "3306:MySQL"
+    "5432:PostgreSQL"
+    "6379:Redis"
+    "27017:MongoDB"
+    "8080:HTTP-Alt"
+    "8443:HTTPS-Alt"
+    "3389:RDP"
+)
+
+for port_info in "${PORT_NAMES[@]}"; do
+    port_num="${port_info%%:*}"
+    port_service="${port_info##*:}"
+
+    if [ "$SSH_PORT" -eq "$port_num" ]; then
+        echo ""
+        print_warning "==================================================================="
+        print_warning "WARNING: Port $SSH_PORT is commonly used for $port_service"
+        print_warning "==================================================================="
+        print_warning "Using this port for SSH may cause conflicts with $port_service service"
+        print_warning "or may be blocked by some firewalls/networks."
+        echo ""
+        read -p "Are you SURE you want to use port $SSH_PORT for SSH? (type 'yes' to confirm): " confirm_port
+
+        if [[ ! "$confirm_port" == "yes" ]]; then
+            print_info "Please choose a different port."
+            read -p "Enter SSH port number: " SSH_PORT
+
+            # Re-validate the new port
+            if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1 ] || [ "$SSH_PORT" -gt 65535 ]; then
+                print_error "Invalid port number. Must be between 1 and 65535"
+                exit 1
+            fi
+        fi
+        break
+    fi
+done
+
+echo ""
+print_info "Changing SSH port to $SSH_PORT..."
+sed -i "s/^#\?Port .*/Port $SSH_PORT/" /etc/ssh/sshd_config
 check_error "Failed to change SSH port"
 
 # Verify port change
-if grep -q "^Port 555" /etc/ssh/sshd_config; then
-    print_success "SSH port changed to 555"
+if grep -q "^Port $SSH_PORT" /etc/ssh/sshd_config; then
+    print_success "SSH port changed to $SSH_PORT"
 else
     print_error "Failed to verify SSH port change"
     exit 1
@@ -243,11 +308,11 @@ check_error "Failed to set default incoming policy"
 ufw default allow outgoing
 check_error "Failed to set default outgoing policy"
 
-# Allow SSH on port 555
-print_info "Allowing SSH on port 555..."
-ufw allow 555/tcp comment 'SSH'
-check_error "Failed to allow port 555"
-print_success "Port 555 (SSH) allowed through firewall"
+# Allow SSH on custom port
+print_info "Allowing SSH on port $SSH_PORT..."
+ufw allow $SSH_PORT/tcp comment 'SSH'
+check_error "Failed to allow port $SSH_PORT"
+print_success "Port $SSH_PORT (SSH) allowed through firewall"
 
 echo ""
 
@@ -351,19 +416,19 @@ if [ ${#WHITELIST_IPS[@]} -eq 0 ]; then
 fi
 
 echo ""
-print_info "Configuring Fail2Ban for SSH on port 555..."
+print_info "Configuring Fail2Ban for SSH on port $SSH_PORT..."
 
 # Create custom jail configuration
 cat > /etc/fail2ban/jail.d/sshd-custom.conf << EOF
 [sshd]
 enabled = true
-port = 555
+port = $SSH_PORT
 filter = sshd
 logpath = /var/log/auth.log
 maxretry = 5
 bantime = -1
 findtime = 600
-action = iptables-multiport[name=SSH, port="555", protocol=tcp]
+action = iptables-multiport[name=SSH, port="$SSH_PORT", protocol=tcp]
 EOF
 
 check_error "Failed to create Fail2Ban jail configuration"
@@ -406,7 +471,7 @@ if fail2ban-client status sshd &> /dev/null; then
     print_success "SSH jail is active and monitoring"
     echo ""
     print_info "Fail2Ban Configuration:"
-    print_info "  - Monitoring: SSH port 555"
+    print_info "  - Monitoring: SSH port $SSH_PORT"
     print_info "  - Max retries: 5 failed attempts"
     print_info "  - Ban duration: PERMANENT"
     print_info "  - Time window: 10 minutes"
@@ -990,7 +1055,7 @@ EOF
     echo ""
     print_info "Domain users can now login with:"
     print_info "  - Username: domain_username (without domain prefix)"
-    print_info "  - Example: ssh -p 555 john.doe@server"
+    print_info "  - Example: ssh -p $SSH_PORT john.doe@server"
     echo ""
     print_warning "IMPORTANT: Test domain user login before disconnecting!"
     echo ""
@@ -1013,7 +1078,7 @@ print_info "Configuration Summary"
 print_info "==================================================================="
 echo ""
 print_success "Automatic updates: Configured"
-print_success "SSH port changed: 22 -> 555"
+print_success "SSH port changed: 22 -> $SSH_PORT"
 print_success "Root SSH login: Disabled"
 print_success "UFW firewall: Enabled"
 print_success "Fail2Ban: Active (5 attempts = permanent ban)"
@@ -1035,7 +1100,7 @@ print_warning "=================================================================
 echo ""
 print_warning "The SSH service needs to be restarted for changes to take effect."
 print_warning "After restart, you will need to connect using:"
-print_warning "  ssh -p 555 user@server"
+print_warning "  ssh -p $SSH_PORT user@server"
 echo ""
 print_warning "If you are connected via SSH, you will be DISCONNECTED!"
 print_warning "Make sure you have console access or another way to connect."
@@ -1062,9 +1127,9 @@ print_success "Ubuntu Server Hardening Complete!"
 print_success "==================================================================="
 echo ""
 print_info "Next steps:"
-print_info "1. Reconnect to SSH using: ssh -p 555 user@server"
+print_info "1. Reconnect to SSH using: ssh -p $SSH_PORT user@server"
 print_info "2. Test that root login is blocked"
 print_info "3. Verify firewall rules are working as expected"
 echo ""
-print_warning "Keep this terminal open until you verify you can connect on port 555!"
+print_warning "Keep this terminal open until you verify you can connect on port $SSH_PORT!"
 echo ""
