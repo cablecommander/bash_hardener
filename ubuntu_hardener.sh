@@ -599,7 +599,7 @@ if [[ "$join_domain" =~ ^[Yy]$ ]]; then
         print_info "Backed up existing krb5.conf"
     fi
 
-    # Create Kerberos configuration
+    # Create Kerberos configuration with proper encryption types for AD compatibility
     cat > /etc/krb5.conf << EOF
 [libdefaults]
     default_realm = $KERBEROS_REALM
@@ -610,6 +610,9 @@ if [[ "$join_domain" =~ ^[Yy]$ ]]; then
     forwardable = true
     rdns = false
     default_ccache_name = KEYRING:persistent:%{uid}
+    default_tgs_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 rc4-hmac
+    default_tkt_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 rc4-hmac
+    permitted_enctypes = aes256-cts-hmac-sha1-96 aes128-cts-hmac-sha1-96 rc4-hmac
 
 [realms]
     $KERBEROS_REALM = {
@@ -680,11 +683,16 @@ EOF
     # Using adcli directly gives us better control than realm join
     print_info "Joining domain using adcli..."
 
+    # Install additional packages that may help with encryption
+    apt-get install -y libsasl2-modules-gssapi-mit > /dev/null 2>&1
+
     # Don't specify domain-ou, let adcli use the default Computers container
     # The --computer-ou flag requires the full DN which is domain-specific
+    # Add samba-data flag to ensure proper attribute setting
     echo "$DOMAIN_PASSWORD" | adcli join "$DOMAIN_NAME" \
         --login-user="$DOMAIN_ADMIN" \
         --stdin-password \
+        --add-samba-data \
         --show-details > /tmp/realm_join.log 2>&1
     JOIN_RESULT=$?
 
