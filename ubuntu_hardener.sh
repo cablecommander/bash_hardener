@@ -501,9 +501,25 @@ if [[ "$join_domain" =~ ^[Yy]$ ]]; then
     apt-get update -qq
     check_error "Failed to update package lists"
 
+    # Pre-configure krb5-config to avoid interactive prompts during installation
+    print_info "Pre-configuring Kerberos to avoid interactive prompts..."
+    export DEBIAN_FRONTEND=noninteractive
+
+    # Pre-seed the Kerberos configuration with dummy values
+    # These will be overwritten by the script later with actual domain settings
+    echo "krb5-config krb5-config/default_realm string TEMP.REALM" | debconf-set-selections
+    echo "krb5-config krb5-config/kerberos_servers string" | debconf-set-selections
+    echo "krb5-config krb5-config/admin_server string" | debconf-set-selections
+    echo "krb5-config krb5-config/add_servers boolean false" | debconf-set-selections
+    echo "krb5-config krb5-config/read_conf boolean true" | debconf-set-selections
+
     apt-get install -y realmd sssd sssd-tools adcli krb5-user packagekit samba-common-bin oddjob oddjob-mkhomedir
     check_error "Failed to install AD integration packages"
-    print_success "Required packages installed successfully"
+
+    # Unset DEBIAN_FRONTEND to restore normal behavior
+    unset DEBIAN_FRONTEND
+
+    print_success "Required packages installed successfully (non-interactive)"
 
     echo ""
 
@@ -646,14 +662,30 @@ EOF
 
     print_info "Joining domain $DOMAIN_NAME..."
 
-    # Join domain using realm with password from stdin
-    echo "$DOMAIN_PASSWORD" | realm join --user="$DOMAIN_ADMIN" "$DOMAIN_NAME" > /tmp/realm_join.log 2>&1
+    # Since Kerberos authentication already succeeded, we have a valid ticket
+    # Re-acquire Kerberos ticket for the domain join operation
+    echo "$DOMAIN_PASSWORD" | kinit "$DOMAIN_ADMIN@$KERBEROS_REALM" > /dev/null 2>&1
 
-    if [ $? -eq 0 ]; then
+    # Join domain using realm with the existing Kerberos ticket
+    # This method is more reliable than passing password through stdin
+    realm join --user="$DOMAIN_ADMIN" "$DOMAIN_NAME" > /tmp/realm_join.log 2>&1
+    JOIN_RESULT=$?
+
+    # Destroy the ticket after join attempt
+    kdestroy > /dev/null 2>&1
+
+    if [ $JOIN_RESULT -eq 0 ]; then
         print_success "Successfully joined domain $DOMAIN_NAME"
     else
         print_error "Failed to join domain"
+        print_error "Check the error details below:"
         cat /tmp/realm_join.log
+        echo ""
+        print_error "Common issues:"
+        print_error "  - Insufficient permissions (user must be Domain Admin)"
+        print_error "  - Computer object already exists in AD"
+        print_error "  - DNS reverse lookup issues"
+        print_error "  - Time synchronization problems"
         exit 1
     fi
 
