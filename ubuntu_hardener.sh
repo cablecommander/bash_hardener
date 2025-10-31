@@ -760,7 +760,7 @@ if validate_yes_no "Would you like to open any additional ports?"; then
 
         echo ""
         print_info "Current firewall rules:"
-        ufw status
+        ufw show added
         echo ""
     done
 fi
