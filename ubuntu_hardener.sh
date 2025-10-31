@@ -757,6 +757,11 @@ if validate_yes_no "Would you like to open any additional ports?"; then
                 print_success "Port $port_num/tcp and udp allowed for $service_desc"
                 ;;
         esac
+
+        echo ""
+        print_info "Current firewall rules:"
+        ufw status
+        echo ""
     done
 fi
 
