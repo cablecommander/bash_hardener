@@ -14,7 +14,6 @@ A comprehensive, interactive bash script designed to automate the hardening of U
 - [Example Output](#example-output)
 - [Files Modified](#files-modified)
 - [Post-Installation Verification](#post-installation-verification)
-- [Contributing](#contributing)
 - [License](#license)
 
 ## Features
