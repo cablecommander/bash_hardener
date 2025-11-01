@@ -114,22 +114,6 @@ The script will guide you through an interactive configuration process with prom
 4. **Automatic Configuration**: Script applies settings based on your choices
 5. **Summary Report**: Final summary of all changes made
 
-### Recommended Workflow
-
-```bash
-# 1. Ensure you're running as root/sudo
-sudo su
-
-# 2. Navigate to the script directory
-cd /path/to/bash_hardener
-
-# 3. Run the script
-./ubuntu_hardener.sh
-
-# 4. Follow the prompts and make your selections
-
-# 5. Keep terminal open until you verify connectivity on new SSH port
-```
 
 ## What the Script Does
 
@@ -556,35 +540,6 @@ if [ -z "$SSH_PORT" ]; then
 fi
 ```
 
-### Integration with Configuration Management
-
-This script can be integrated into larger automation workflows:
-- Call from Ansible playbooks
-- Include in cloud-init configurations
-- Use in Terraform provisioners
-- Incorporate into CI/CD pipelines
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit issues or pull requests.
-
-### How to Contribute
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/improvement`)
-3. Make your changes
-4. Test thoroughly on Ubuntu 22.04 and 24.04
-5. Commit your changes (`git commit -m 'Add new feature'`)
-6. Push to the branch (`git push origin feature/improvement`)
-7. Open a Pull Request
-
-### Reporting Issues
-
-When reporting issues, please include:
-- Ubuntu version
-- Full error messages
-- Steps to reproduce
-- Expected vs actual behavior
 
 ## License
 
@@ -592,9 +547,5 @@ This project is provided as-is for educational and administrative purposes. Plea
 
 ---
 
-**Author**: System Administrator Tooling
-**Version**: 1.0
-**Last Updated**: October 2024
-**Repository**: https://github.com/yourusername/bash_hardener
-
-**Support**: For questions or issues, please open a GitHub issue.
+**Last Updated**: November 2025
+**Repository**: https://github.com/cablecommander/bash_hardener
